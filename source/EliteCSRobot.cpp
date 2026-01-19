@@ -1,0 +1,680 @@
+#include "EliteCSRobot.h"
+#include <Elite/Log.hpp>
+#include <Elite/DataType.hpp>
+
+#include <future>
+#include <sstream>
+#include <iomanip>
+#include <cstdarg>
+
+#define CHECK_CONNECTION    \
+    if (!IsConnected())     \
+    {                       \
+        ELITE_LOG_FATAL("Robot not connected");\
+        return false;                          \
+    }
+
+using namespace ELITE;
+using namespace ROBOT;
+
+std::unordered_map<std::string, int> EliteCSRobot::m_axisToIndex{
+    {"x", 0}, {"y", 1}, {"z", 2}, {"rx", 3}, {"ry", 4}, {"rz", 5}
+};
+
+EliteCSRobot::EliteCSRobot(const EliteDriverConfig& config)
+{
+    m_config = config;
+    m_driverPtr = std::make_unique<EliteDriver>(config);
+    m_dashboardPtr = std::make_unique<DashboardClient>();
+
+    m_isConnect = false;
+    m_robotState = RobotState::IDLE;
+    m_motionMode= MotionMode::AUTOMATIC;
+
+    m_isPlaying = false;
+    m_stopRequested = false;
+
+    m_posCallbackPtr = nullptr;
+    m_stateCallbackPtr = nullptr;
+}
+
+EliteCSRobot::~EliteCSRobot()
+{
+    StopPathPlayback();
+    Disconnect();
+}
+
+bool EliteCSRobot::Connect(const ConfigDict& config)
+{
+    // 解析配置
+    Config conf;
+    if (!ParseConfig(config, conf))
+    {
+        ELITE_LOG_FATAL("Failed to parse config");
+        return false;
+    }
+
+    // dashboard连接，上电，释放抱闸
+    ELITE_LOG_INFO("Connecting to the dashboard");
+    if (!m_dashboardPtr->connect(m_config.robot_ip))
+    {
+        ELITE_LOG_FATAL("Failed to connect to theashboard.");
+        return false;
+    }
+    ELITE_LOG_INFO("Successfully connected to the dashboard");
+
+    ELITE_LOG_INFO("Start powering on...");
+    if (!m_dashboardPtr->powerOn())
+    {
+        ELITE_LOG_FATAL("Power-on failed");
+        return false;
+    }
+    ELITE_LOG_INFO("Power-on succeeded");
+
+    ELITE_LOG_INFO("Start releasing brake...");
+    if (!m_dashboardPtr->brakeRelease())
+    {
+        ELITE_LOG_FATAL("Brake release failed");
+        return false;
+    }
+    ELITE_LOG_INFO("Brake released");
+
+    // 机器人驱动连接
+    if (m_config.headless_mode)
+    {
+        if (!m_driverPtr->isRobotConnected())
+        {
+            if (!m_driverPtr->sendExternalControlScript())
+            {
+            ELITE_LOG_FATAL("Fail to send external control script");
+            return false;
+            }
+        }
+    } else {
+        if (!m_dashboardPtr->playProgram())
+        {
+            ELITE_LOG_FATAL("Fail to play program");
+            return false;
+        }
+    }
+
+    ELITE_LOG_INFO("Wait external control script run...");
+    while (!m_driverPtr->isRobotConnected())
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ELITE_LOG_INFO("External control script is running");
+
+    // RTSI接口连接
+    m_rtsiPtr = std::make_unique<RtsiIOInterface>(conf.outputRecipePath, conf.inputRecipePath, 250);
+    ELITE_LOG_INFO("Connecting to the RTSI");
+    if (!m_rtsiPtr->connect(m_config.robot_ip))
+    {
+        ELITE_LOG_FATAL("Fail to connect or config to the RTSI.");
+        return false;
+    }
+    ELITE_LOG_INFO("Successfully connected to the RTSI");
+
+    m_isConnect = true;
+
+    m_robotState = RobotState::IDLE;
+
+    return true;
+}
+
+bool EliteCSRobot::Disconnect()
+{
+    if (!m_isConnect)
+    {
+        return true;
+    }
+    
+    m_dashboardPtr->disconnect();
+
+    if (!m_driverPtr->stopControl())
+    {
+         ELITE_LOG_FATAL("Elite driver stopControl failed");
+         return false;
+    }
+
+    m_rtsiPtr->disconnect();
+
+    m_isConnect = false;
+
+    return true;
+}
+
+bool EliteCSRobot::IsConnected() const
+{
+    return m_isConnect;
+}
+
+bool EliteCSRobot::MoveTo(double x, double y, double z,
+                          double rx, double ry, double rz) 
+{
+    CHECK_CONNECTION;
+
+    vector6d_t point{x, y, z, rx, ry, rz};
+    return m_driverPtr->writeServoj(point, 200, true, false);
+}
+
+bool EliteCSRobot::GetPosition(RobotPosition& outPos) const
+{
+    CHECK_CONNECTION;
+
+    vector6d_t actualPos = m_rtsiPtr->getActualTCPPose();
+
+    using clock = std::chrono::system_clock;
+    double timestamp = std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+
+    outPos = RobotPosition{actualPos[0], actualPos[1], actualPos[2], actualPos[3], actualPos[4], actualPos[5],
+        timestamp};
+
+    return true;
+}
+
+bool EliteCSRobot::Home()
+{
+    CHECK_CONNECTION;
+
+    return MoveTo(0, 0, 0, 0, 0, 0);
+}
+
+bool EliteCSRobot::EmergencyStop()
+{
+    CHECK_CONNECTION;
+
+    m_dashboardPtr->shutdown();
+    Disconnect();
+    m_robotState = RobotState::EMERGENCY_STOP;
+
+    return true;
+}
+
+bool EliteCSRobot::SetSpeed(double percent_0_100)
+{
+    CHECK_CONNECTION;
+
+    if (!(0 <= percent_0_100 && percent_0_100 <= 100))
+    {
+        ELITE_LOG_ERROR("Speed value %f not in [0, 100]", percent_0_100);
+        return false;
+    }
+
+    double speedScaling = percent_0_100 / 100;
+
+    return m_rtsiPtr->setSpeedScaling(speedScaling);
+}
+
+void EliteCSRobot::GetInfo(InfoDict& outInfo) const
+{
+    outInfo["brand"] = "Elite";
+    outInfo["type"] = "Robot";
+    outInfo["connected"] = IsConnected();
+    outInfo["model"] = "None";
+    outInfo["ip"] = m_config.robot_ip;
+}
+
+void EliteCSRobot::TestConnection(InfoDict& outResult)
+{
+    outResult["success"] = false;
+    if (!IsConnected())
+    {
+        outResult["error"] = "Robot not connected";
+        return;
+    }
+
+    RobotPosition pos;
+    if (!GetPosition(pos))
+    {
+        outResult["error"] = "Failed to get position";
+        return;
+    }
+
+    outResult["success"] = true;
+    outResult["position"] = pos;
+}
+
+bool EliteCSRobot::StartJogging(const std::string& axis)
+{
+    return true;
+}
+
+bool EliteCSRobot::StopJogging()
+{
+    return true;
+}
+
+bool EliteCSRobot::JogMove(const std::string& axis, double speed, double distance)
+{
+    CHECK_CONNECTION;
+
+    vector6d_t pos = m_rtsiPtr->getActualTCPPose();
+    vector6d_t velocity = m_rtsiPtr->getActualTCPVelocity();
+    if (m_axisToIndex.count(axis) == 0)
+    {
+        ELITE_LOG_ERROR("Invalid axis : %s", axis.c_str());
+        return false;
+    }
+    int index = m_axisToIndex[axis];
+    pos[index] += distance;
+    velocity[index] = speed;
+
+    if (!m_driverPtr->writeSpeedl(velocity, 200))
+    {
+        ELITE_LOG_ERROR("Failed to write line speed");
+        return false;
+    }
+
+
+    if (!m_driverPtr->writeServoj(pos, 200, true, false))
+    {
+        ELITE_LOG_ERROR("Failed to write servoj");
+        return false;
+    }
+
+    return true;
+}
+
+bool EliteCSRobot::SetMotionMode(MotionMode mode)
+{
+    m_motionMode = mode;
+
+    return true;
+}
+
+bool EliteCSRobot::GetMotionMode(MotionMode& outMode) const
+{
+    outMode = m_motionMode;
+
+    return true;
+}
+
+RobotState EliteCSRobot::GetState() const
+{
+    return m_robotState;
+}
+
+bool EliteCSRobot::IsMoving() const
+{
+    RobotState robotState = GetState();
+
+    return robotState == RobotState::JOGGING || robotState == RobotState::MOVING;
+}
+
+bool EliteCSRobot::StartPathRecording(const std::string& pathName)
+{
+    CHECK_CONNECTION;
+
+    std::lock_guard<std::mutex> lock(m_recordPathMutex);
+    if (m_isRecordingPath)
+    {
+        ELITE_LOG_ERROR("Path recording already in progreess");
+        return false;
+    }
+
+    m_isRecordingPath = true;
+
+    using clock = std::chrono::system_clock;
+    double ts = std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+
+    std::time_t tt = static_cast<std::time_t>(ts);
+    std::stringstream ss;
+    ss << std::put_time(std::localtime(&tt), "%F %T");
+
+    m_recordPath.name = pathName;
+    m_recordPath.points.clear();
+    m_recordPath.createdTime = ts;
+    m_recordPath.description = "Recorded on " + ss.str();
+    m_recordPath.id = "path_" + std::to_string(static_cast<long>(ts));
+
+    m_recordPathName = pathName;
+
+    ELITE_LOG_INFO("Started Recording path : %s", pathName.c_str());
+
+    return true;
+}
+
+bool EliteCSRobot::StopPathRecording()
+{
+    std::lock_guard<std::mutex> lock(m_recordPathMutex);
+
+    if (!m_isRecordingPath)
+    {
+        ELITE_LOG_ERROR("No path recording in progress");
+        return false;
+    }
+
+    m_isRecordingPath = false;
+    ELITE_LOG_INFO("Stopped recording path : %s", m_recordPathName.c_str());
+
+    return true;
+}
+
+bool EliteCSRobot::AddPathPoint(const PathPoint* point) 
+{
+    CHECK_CONNECTION;
+
+    std::lock_guard<std::mutex> lock(m_recordPathMutex);
+
+    if (!m_isRecordingPath)
+    {
+        ELITE_LOG_ERROR("No path recording in progress");
+        return false;
+    }
+
+    PathPoint pathPoint;
+    if (point == nullptr)
+    {
+        RobotPosition currentPos;
+        if (!GetPosition(currentPos))
+        {
+            ELITE_LOG_ERROR("Get current position failed");
+            return false;
+        }
+
+        pathPoint.position = currentPos;
+    } else
+    {
+        pathPoint = *point;
+    }
+
+    m_recordPath.points.push_back(pathPoint);
+
+    RobotPosition& pos = pathPoint.position;
+    ELITE_LOG_INFO("add path point : %s", PositionInfo(pos).c_str());
+
+    return true;
+}
+
+bool EliteCSRobot::GetRecordedPath(RobotPath& outPath)
+{
+    std::lock_guard<std::mutex> lock(m_recordPathMutex);
+
+    outPath = m_recordPath;
+
+    return true;
+}
+
+bool EliteCSRobot::ClearRecordedPath()
+{
+    std::lock_guard<std::mutex> lock(m_recordPathMutex);
+
+    m_recordPath = RobotPath();
+    m_recordPathName = "";
+
+    return true;
+}
+
+bool EliteCSRobot::PlayPath(const RobotPath& path, int loopCount)
+{
+    CHECK_CONNECTION;
+
+    bool expected = false;
+    if (!m_isPlaying.compare_exchange_strong(expected, true))
+    {
+        ELITE_LOG_WARN("Path already playing");
+        return false;
+    }
+
+    m_stopRequested = false;
+    m_playbackThread = std::thread(&EliteCSRobot::PlaybackWorker, this, path, loopCount);
+    ELITE_LOG_INFO("Start Elite path playback: %s, loops: %i", path.name.c_str(), loopCount);
+
+    return true;
+}
+
+bool EliteCSRobot::StopPathPlayback()
+{
+    if (!m_isPlaying)
+    {
+        ELITE_LOG_WARN("No path playing");
+        return false;
+    }
+
+    m_stopRequested = true;
+
+    if (m_playbackThread.joinable())
+    {
+        m_playbackThread.join();
+    }
+
+    m_isPlaying = false;
+    ELITE_LOG_INFO("Elite path playback stopped");
+
+    return true;
+}
+
+bool EliteCSRobot::IsPathPlaying() const
+{
+    return m_isPlaying;
+}
+
+bool EliteCSRobot::MoveLinear(const RobotPosition& start, const RobotPosition& end, double speed)
+{
+    CHECK_CONNECTION;
+
+    if (!MoveTo(start.x, start.y, start.z, start.rx, start.ry, start.rz))
+    {
+        ELITE_LOG_ERROR("Failed to move to start %s", PositionInfo(start).c_str());
+        return false;
+    }
+
+    if (!SetSpeed(speed))
+    {
+        ELITE_LOG_ERROR("Failed to set speed %f", speed);
+        return false;
+    }
+
+    if (!MoveTo(end.x, end.y, end.z, end.rx, end.ry, end.rz))
+    {
+        ELITE_LOG_ERROR("Failed to move to end %s", PositionInfo(end).c_str());
+        return false;
+    }
+
+    ELITE_LOG_INFO("Move from start %s to end %s", PositionInfo(start).c_str(), PositionInfo(end).c_str());
+
+    return true;
+}
+
+bool EliteCSRobot::MoveCircular(const RobotPosition& center, double radius, double angle, double speed)
+{
+    CHECK_CONNECTION;
+
+    return true;
+}
+
+bool EliteCSRobot::SetWorkCoordinateSystem(const WcsDict& wcs)
+{
+    CHECK_CONNECTION;
+
+    return true;
+}
+
+bool EliteCSRobot::GetWorkCoordinateSystem(WcsDict& outWcs) const
+{
+    CHECK_CONNECTION;
+
+    return true;
+}
+
+bool EliteCSRobot::ToggleWorkCoordinateSystem()
+{
+    CHECK_CONNECTION;
+
+    return true;
+}
+
+bool EliteCSRobot::RegisterPositionCallback(PositionCallback cb)
+{
+    m_posCallbackPtr = std::make_unique<PositionCallback>(cb);
+
+    return true;
+}
+
+bool EliteCSRobot::RegisterStateCallback(StateCallback cb)
+{
+    m_stateCallbackPtr = std::make_unique<StateCallback>(cb);
+
+    return true;
+}
+
+bool EliteCSRobot::UnregisterPositionCallback(PositionCallback cb)
+{
+    m_posCallbackPtr = nullptr;
+
+    return true;
+}
+
+bool EliteCSRobot::UnregisterStateCallback(StateCallback cb)
+{
+    m_stateCallbackPtr = nullptr;
+
+    return true;
+}
+
+bool EliteCSRobot::MoveTrajectory(const std::vector<ELITE::vector6d_t>& trajectory, float pointTime, float blendRadius,
+    bool isCartesian)
+{
+    CHECK_CONNECTION;
+
+    std::promise<TrajectoryMotionResult> moveDonePromise;
+    m_driverPtr->setTrajectoryResultCallback([&](TrajectoryMotionResult result) { moveDonePromise.set_value(result); });
+
+    ELITE_LOG_INFO("Trajectory motion start");
+    if(!m_driverPtr->writeTrajectoryControlAction(ELITE::TrajectoryControlAction::START, trajectory.size(), 200))
+    {
+        ELITE_LOG_ERROR("Failed to start trajectory motion");
+        return false;
+    }
+
+    for (const auto& pos : trajectory) {
+        if (!m_driverPtr->writeTrajectoryPoint(pos, pointTime, blendRadius, isCartesian))
+        {
+            ELITE_LOG_ERROR("Failed to write trajectory point");
+            return false;
+        }
+        // Send NOOP command to avoid timeout.
+        if(!m_driverPtr->writeTrajectoryControlAction(ELITE::TrajectoryControlAction::NOOP, 0, 200)) {
+            ELITE_LOG_ERROR("Failed to send NOOP command");
+            return false;
+        }
+    }
+
+    std::future<TrajectoryMotionResult> moveDoneFuture = moveDonePromise.get_future();
+    while (moveDoneFuture.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready)
+    {
+        // Wait for the trajectory motion to complete, and send NOOP command to avoid timeout.
+        if(!m_driverPtr->writeTrajectoryControlAction(ELITE::TrajectoryControlAction::NOOP, 0, 200)) {
+            ELITE_LOG_ERROR("Failed to send NOOP command");
+            return false;
+        }
+    }
+    auto result = moveDoneFuture.get();
+    ELITE_LOG_INFO("Trajectory motion completed with result: %d", result);
+
+    if(!m_driverPtr->writeIdle(0))
+    {
+        ELITE_LOG_ERROR("Failed to write idle command");
+        return false;
+    }
+
+    return result == TrajectoryMotionResult::SUCCESS;
+}
+
+template<typename T>
+bool GetAnyValue(const std::any& any, T& value)
+{
+    if (auto p = std::any_cast<T>(&any); p != nullptr)
+    {
+        value = *p;
+        return true;
+    }
+
+    return false;
+}
+
+template<typename T>
+bool GetConfigVal(const ConfigDict& configDict, const std::string& key, const T& defaultVal, T& val)
+{
+    if (configDict.count(key) != 0)
+    {
+        return GetAnyValue(configDict.at(key), val);
+    }
+    val = defaultVal;
+
+    return true;
+}
+
+
+bool EliteCSRobot::ParseConfig(const ConfigDict& configDict, Config& config)
+{
+    if (!GetConfigVal(configDict, "inputRecipePath", std::string("input_recipe.txt"), config.inputRecipePath))
+    {
+        return false;
+    }
+
+    if (!GetConfigVal(configDict, "outputRecipePath", std::string("output_recipe.txt"), config.outputRecipePath))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+
+void EliteCSRobot::PlaybackWorker(const RobotPath& path, int loop_count)
+{
+    for (int loop = 0; loop < loop_count; ++loop)
+    {
+        for (const auto& pt : path.points)
+        {
+            if (m_stopRequested)
+            {
+                break;
+            }
+
+            const auto& p = pt.position;
+            if (!MoveTo(p.x, p.y, p.z, p.rx, p.ry, p.rz))
+            {
+                ELITE_LOG_ERROR("Failed to move to path point");
+                break;
+            }
+
+            SetSpeed(pt.speed);
+
+            if (pt.delay > 0)
+            {
+                std::this_thread::sleep_for(std::chrono::duration<double>(pt.delay));
+            }
+        }
+    }
+
+    m_isPlaying = false;
+}
+
+
+inline std::string FormatStr(const char* format, ...)
+{
+    va_list args1, args2;
+    va_start(args1, format);
+    va_copy(args2, args1);
+
+    int len = vsnprintf(nullptr, 0, format, args1) + 1;
+    va_end(args1);
+
+    std::string buf(len, '\0');
+    vsnprintf(buf.data(), len, format, args2);
+    va_end(args2);
+
+    buf.pop_back();          // 去掉末尾 '\0'
+    return buf;
+}
+
+std::string EliteCSRobot::PositionInfo(const RobotPosition& pos)
+{
+    return FormatStr("[%f, %f, %f, %f, %f, %f] %f", pos.x, pos.y, pos.z, pos.rx, pos.ry, pos.rz, pos.timestamp);
+}
+
+
+
