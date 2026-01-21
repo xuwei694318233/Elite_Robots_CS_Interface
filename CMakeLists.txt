@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 project(EliteCSRobot LANGUAGES CXX)
 
+# ===== 全项目统一 UTF-8（仅 MSVC 需要） =====
+if(MSVC)
+    add_compile_options(/utf-8)          # 源码字符集 + 执行字符集均 UTF-8
+endif()
+
 # -------------------- 基础选项 --------------------
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -66,6 +71,7 @@ target_include_directories(EliteCSRobot
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>)
 # ★★★ 第三方库仅 PRIVATE 链接，对外隐藏
+target_compile_definitions(EliteCSRobot PRIVATE ROBOT_EXPORT_LIBRARY)
 target_link_libraries(EliteCSRobot PRIVATE elite_sdk)
 apply_build_config(EliteCSRobot)
 

@@ -45,10 +45,11 @@ chmod +x build.sh
 ```
 
 ### windows
+
+在「x64 Native Tools Command Prompt for VS 2019/2022」里执行
+
 ```batch
-build.bat          :: 默认 2022 + Release
-build.bat 2019     :: 2019 + Release
-build.bat 2022 Debug
-build.bat 2019 Debug
+build.bat        :: 默认 Release
+build.bat Debug  :: 编 Debug
 ```
 
