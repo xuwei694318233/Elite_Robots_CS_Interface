@@ -1,14 +1,19 @@
 #!/bin/bash
-set -e                 # 任何一条命令失败就立即退出
-BUILD_DIR=build
+set -e
 
-# 1. 创建（若已存在则复用）并进入生成目录
-mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
+# 1. 读取参数，默认 Release
+BUILD_TYPE=${1:-Release}
+# 统一小写，拼路径
+TYPE_LC=${BUILD_TYPE,,}
+BUILD_DIR="build/linux/${TYPE_LC}"
 
-# 2. 生成构建系统
-cmake .. -DCMAKE_BUILD_TYPE=Release
+if [[ "$BUILD_TYPE" != "Release" && "$BUILD_TYPE" != "Debug" ]]; then
+    echo "Usage: $0 [Release|Debug]"
+    exit 1
+fi
+
+# 2. 配置
+cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
 
 # 3. 编译
-cmake --build . --parallel "$(nproc)"
-
+cmake --build "$BUILD_DIR" --parallel "$(nproc)"
