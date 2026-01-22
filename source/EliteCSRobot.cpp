@@ -7,6 +7,9 @@
 #include <iomanip>
 #include <cstdarg>
 
+#include <chrono>
+using namespace std::chrono_literals;   // 打开字面量
+
 #define CHECK_CONNECTION    \
     if (!IsConnected())     \
     {                       \
@@ -20,6 +23,23 @@ using namespace ROBOT;
 std::unordered_map<std::string, int> EliteCSRobot::m_axisToIndex{
     {"x", 0}, {"y", 1}, {"z", 2}, {"rx", 3}, {"ry", 4}, {"rz", 5}
 };
+
+inline std::string FormatStr(const char* format, ...)
+{
+    va_list args1, args2;
+    va_start(args1, format);
+    va_copy(args2, args1);
+
+    int len = vsnprintf(nullptr, 0, format, args1) + 1;
+    va_end(args1);
+
+    std::string buf(len, '\0');
+    vsnprintf(buf.data(), len, format, args2);
+    va_end(args2);
+
+    buf.pop_back();          // 去掉末尾 '\0'
+    return buf;
+}
 
 EliteCSRobot::EliteCSRobot(const EliteDriverConfig& config)
 {
@@ -154,8 +174,49 @@ bool EliteCSRobot::MoveTo(double x, double y, double z,
 {
     CHECK_CONNECTION;
 
+    ToolMode mode = m_rtsiPtr->getToolMode();
+    std::string modeStr = "unknown";
+    if (mode == ToolMode::MODE_RUNNING)
+    {
+        modeStr = "running";
+    } else if (mode == ToolMode::MODE_IDLE)
+    {
+        modeStr = "idle";
+    }
+
+    ELITE_LOG_INFO("Tool mode : %s", modeStr.c_str());
+
     vector6d_t point{x, y, z, rx, ry, rz};
-    return m_driverPtr->writeServoj(point, 200, true, false);
+    if (!m_driverPtr->writeServoj(point, 100, true, false))
+    {
+        ELITE_LOG_ERROR("Failed to move to start %s", PositionInfo(point).c_str());
+        return false;
+    }
+
+    mode = m_rtsiPtr->getToolMode();
+    modeStr = "unknown";
+    if (mode == ToolMode::MODE_RUNNING)
+    {
+        modeStr = "running";
+    } else if (mode == ToolMode::MODE_IDLE)
+    {
+        modeStr = "idle";
+    }
+
+    std::this_thread::sleep_for(4s);
+
+    mode = m_rtsiPtr->getToolMode();
+    modeStr = "unknown";
+    if (mode == ToolMode::MODE_RUNNING)
+    {
+        modeStr = "running";
+    } else if (mode == ToolMode::MODE_IDLE)
+    {
+        modeStr = "idle";
+    }
+
+    ELITE_LOG_INFO("Tool mode : %s", modeStr.c_str());
+    return true;
 }
 
 bool EliteCSRobot::GetPosition(RobotPosition& outPos) const
@@ -203,7 +264,13 @@ bool EliteCSRobot::SetSpeed(double percent_0_100)
 
     double speedScaling = percent_0_100 / 100;
 
-    return m_rtsiPtr->setSpeedScaling(speedScaling);
+    if (!m_rtsiPtr->setSpeedScaling(speedScaling))
+    {
+        ELITE_LOG_ERROR("Failed to set speed %f", speedScaling);
+        return false;
+    }
+
+    return true;
 }
 
 void EliteCSRobot::GetInfo(InfoDict& outInfo) const
@@ -456,19 +523,16 @@ bool EliteCSRobot::MoveLinear(const RobotPosition& start, const RobotPosition& e
 
     if (!MoveTo(start.x, start.y, start.z, start.rx, start.ry, start.rz))
     {
-        ELITE_LOG_ERROR("Failed to move to start %s", PositionInfo(start).c_str());
         return false;
     }
 
     if (!SetSpeed(speed))
     {
-        ELITE_LOG_ERROR("Failed to set speed %f", speed);
         return false;
     }
 
     if (!MoveTo(end.x, end.y, end.z, end.rx, end.ry, end.rz))
     {
-        ELITE_LOG_ERROR("Failed to move to end %s", PositionInfo(end).c_str());
         return false;
     }
 
@@ -654,27 +718,13 @@ void EliteCSRobot::PlaybackWorker(const RobotPath& path, int loop_count)
 }
 
 
-inline std::string FormatStr(const char* format, ...)
-{
-    va_list args1, args2;
-    va_start(args1, format);
-    va_copy(args2, args1);
-
-    int len = vsnprintf(nullptr, 0, format, args1) + 1;
-    va_end(args1);
-
-    std::string buf(len, '\0');
-    vsnprintf(buf.data(), len, format, args2);
-    va_end(args2);
-
-    buf.pop_back();          // 去掉末尾 '\0'
-    return buf;
-}
-
 std::string EliteCSRobot::PositionInfo(const RobotPosition& pos)
 {
     return FormatStr("[%f, %f, %f, %f, %f, %f] %f", pos.x, pos.y, pos.z, pos.rx, pos.ry, pos.rz, pos.timestamp);
 }
 
-
+std::string EliteCSRobot::PositionInfo(const vector6d_t& pos)
+{
+    return FormatStr("[%f, %f, %f, %f, %f, %f]", pos[0], pos[1], pos[2], pos[3], pos[4], pos[5]);
+}
 

@@ -104,6 +104,7 @@ private:
     bool ParseConfig(const ConfigDict& configDict, Config& config);
     void PlaybackWorker(const RobotPath& path, int loopCount);
     std::string PositionInfo(const RobotPosition& pos);
+    std::string PositionInfo(const ELITE::vector6d_t& pos);
 
 private:
     std::unique_ptr<ELITE::EliteDriver> m_driverPtr;

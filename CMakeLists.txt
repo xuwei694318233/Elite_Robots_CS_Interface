@@ -25,26 +25,40 @@ else()
     message(FATAL_ERROR "Unsupported platform")
 endif()
 
-# 根据 Debug/Release 选第三方库目录
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(SDK_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/EliteSDK/bin/${PLAT}/Debug")
-else()
-    set(SDK_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/EliteSDK/bin/${PLAT}/Release")
-endif()
-
-# -------------------- 导入第三方 SDK --------------------
+# -------------------- 导入第三方 SDK（多配置友好） --------------------
 include_directories("${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/EliteSDK/include")
 
+# 1. 定义两套 IMPORTED 目标（Debug / Release）
+set(SDK_LIB_DIR_DEBUG   "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/EliteSDK/bin/${PLAT}/Debug")
+set(SDK_LIB_DIR_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/EliteSDK/bin/${PLAT}/Release")
+
+# Debug 版
+add_library(elite_sdk_debug SHARED IMPORTED)
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    add_library(elite_sdk SHARED IMPORTED)
-    set_target_properties(elite_sdk PROPERTIES
-        IMPORTED_LOCATION "${SDK_LIB_DIR}/${LIB_PREFIX}elite-cs-series-sdk.${LIB_EXT}"
-        IMPORTED_IMPLIB   "${SDK_LIB_DIR}/${LIB_PREFIX}elite-cs-series-sdk.${IMPLIB_EXT}")
+    set_target_properties(elite_sdk_debug PROPERTIES
+        IMPORTED_LOCATION "${SDK_LIB_DIR_DEBUG}/${LIB_PREFIX}elite-cs-series-sdk.${LIB_EXT}"
+        IMPORTED_IMPLIB   "${SDK_LIB_DIR_DEBUG}/${LIB_PREFIX}elite-cs-series-sdk.${IMPLIB_EXT}")
 else()
-    add_library(elite_sdk SHARED IMPORTED)
-    set_target_properties(elite_sdk PROPERTIES
-        IMPORTED_LOCATION "${SDK_LIB_DIR}/${LIB_PREFIX}elite-cs-series-sdk.${LIB_EXT}")
+    set_target_properties(elite_sdk_debug PROPERTIES
+        IMPORTED_LOCATION "${SDK_LIB_DIR_DEBUG}/${LIB_PREFIX}elite-cs-series-sdk.${LIB_EXT}")
 endif()
+
+# Release 版
+add_library(elite_sdk_release SHARED IMPORTED)
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set_target_properties(elite_sdk_release PROPERTIES
+        IMPORTED_LOCATION "${SDK_LIB_DIR_RELEASE}/${LIB_PREFIX}elite-cs-series-sdk.${LIB_EXT}"
+        IMPORTED_IMPLIB   "${SDK_LIB_DIR_RELEASE}/${LIB_PREFIX}elite-cs-series-sdk.${IMPLIB_EXT}")
+else()
+    set_target_properties(elite_sdk_release PROPERTIES
+        IMPORTED_LOCATION "${SDK_LIB_DIR_RELEASE}/${LIB_PREFIX}elite-cs-series-sdk.${LIB_EXT}")
+endif()
+
+# 2. 用接口库包装，让下游通过生成器表达式自动选 Debug/Release
+add_library(elite_sdk INTERFACE)
+target_link_libraries(elite_sdk INTERFACE
+    $<$<CONFIG:Debug>:elite_sdk_debug>
+    $<$<CONFIG:Release>:elite_sdk_release>)
 
 # -------------------- Debug/Release 编译区分 --------------------
 function(apply_build_config target)
@@ -70,22 +84,27 @@ target_include_directories(EliteCSRobot
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>)
-# ★★★ 第三方库仅 PRIVATE 链接，对外隐藏
 target_compile_definitions(EliteCSRobot PRIVATE ROBOT_EXPORT_LIBRARY)
-target_link_libraries(EliteCSRobot PRIVATE elite_sdk)
+target_link_libraries(EliteCSRobot PUBLIC elite_sdk)   # 自动切换 Debug/Release
 apply_build_config(EliteCSRobot)
 
 # -------------------- 2. 可执行文件（仅链接自己的动态库） --------------------
 add_executable(elite_test source/test.cpp)
-# ★★★ 不再直接链接 elite_sdk
 target_link_libraries(elite_test PRIVATE EliteCSRobot)
 apply_build_config(elite_test)
 
-# -------------------- Windows 自动拷运行时 DLL --------------------
+# -------------------- Windows：复制整套 SDK bin 目录（含 pdb、附加 dll） --------------------
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    # 1. 最小运行时依赖
     add_custom_command(TARGET elite_test POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_RUNTIME_DLLS:elite_test>"
         "$<TARGET_FILE_DIR:elite_test>"
         COMMAND_EXPAND_LISTS)
+
+    # 2. 整套 Debug/Release 文件夹
+    add_custom_command(TARGET elite_test POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "$<IF:$<CONFIG:Debug>,${SDK_LIB_DIR_DEBUG},${SDK_LIB_DIR_RELEASE}>"
+        "$<TARGET_FILE_DIR:elite_test>")
 endif()
