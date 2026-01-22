@@ -5,8 +5,9 @@ using namespace ROBOT;
 
 int main()
 {
-    std::string rootDir = R"()";
+    std::string rootDir = R"(C:\Users\GhFeng\Desktop\xuwei\gitcode\Elite_Robots_CS_Interface)";
     ELITE::EliteDriverConfig config;
+    config.headless_mode = true;
     config.robot_ip = "192.168.1.200";
     config.script_file_path = rootDir + "/resources/external_control.script";
 

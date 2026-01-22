@@ -8,23 +8,22 @@
 #include <cstdarg>
 
 #include <chrono>
-using namespace std::chrono_literals;   // 打开字面量
+using namespace std::chrono_literals; // 打开字面量
 
-#define CHECK_CONNECTION    \
-    if (!IsConnected())     \
-    {                       \
-        ELITE_LOG_FATAL("Robot not connected");\
-        return false;                          \
+#define CHECK_CONNECTION                        \
+    if (!IsConnected())                         \
+    {                                           \
+        ELITE_LOG_FATAL("Robot not connected"); \
+        return false;                           \
     }
 
 using namespace ELITE;
 using namespace ROBOT;
 
 std::unordered_map<std::string, int> EliteCSRobot::m_axisToIndex{
-    {"x", 0}, {"y", 1}, {"z", 2}, {"rx", 3}, {"ry", 4}, {"rz", 5}
-};
+    {"x", 0}, {"y", 1}, {"z", 2}, {"rx", 3}, {"ry", 4}, {"rz", 5}};
 
-inline std::string FormatStr(const char* format, ...)
+inline std::string FormatStr(const char *format, ...)
 {
     va_list args1, args2;
     va_start(args1, format);
@@ -37,11 +36,11 @@ inline std::string FormatStr(const char* format, ...)
     vsnprintf(buf.data(), len, format, args2);
     va_end(args2);
 
-    buf.pop_back();          // 去掉末尾 '\0'
+    buf.pop_back(); // 去掉末尾 '\0'
     return buf;
 }
 
-EliteCSRobot::EliteCSRobot(const EliteDriverConfig& config)
+EliteCSRobot::EliteCSRobot(const EliteDriverConfig &config)
 {
     m_config = config;
     m_driverPtr = std::make_unique<EliteDriver>(config);
@@ -49,7 +48,7 @@ EliteCSRobot::EliteCSRobot(const EliteDriverConfig& config)
 
     m_isConnect = false;
     m_robotState = RobotState::IDLE;
-    m_motionMode= MotionMode::AUTOMATIC;
+    m_motionMode = MotionMode::AUTOMATIC;
 
     m_isPlaying = false;
     m_stopRequested = false;
@@ -64,7 +63,7 @@ EliteCSRobot::~EliteCSRobot()
     Disconnect();
 }
 
-bool EliteCSRobot::Connect(const ConfigDict& config)
+bool EliteCSRobot::Connect(const ConfigDict &config)
 {
     // 解析配置
     Config conf;
@@ -106,11 +105,13 @@ bool EliteCSRobot::Connect(const ConfigDict& config)
         {
             if (!m_driverPtr->sendExternalControlScript())
             {
-            ELITE_LOG_FATAL("Fail to send external control script");
-            return false;
+                ELITE_LOG_FATAL("Fail to send external control script");
+                return false;
             }
         }
-    } else {
+    }
+    else
+    {
         if (!m_dashboardPtr->playProgram())
         {
             ELITE_LOG_FATAL("Fail to play program");
@@ -148,13 +149,13 @@ bool EliteCSRobot::Disconnect()
     {
         return true;
     }
-    
+
     m_dashboardPtr->disconnect();
 
     if (!m_driverPtr->stopControl())
     {
-         ELITE_LOG_FATAL("Elite driver stopControl failed");
-         return false;
+        ELITE_LOG_FATAL("Elite driver stopControl failed");
+        return false;
     }
 
     m_rtsiPtr->disconnect();
@@ -170,56 +171,28 @@ bool EliteCSRobot::IsConnected() const
 }
 
 bool EliteCSRobot::MoveTo(double x, double y, double z,
-                          double rx, double ry, double rz) 
+                          double rx, double ry, double rz)
 {
     CHECK_CONNECTION;
 
-    ToolMode mode = m_rtsiPtr->getToolMode();
-    std::string modeStr = "unknown";
-    if (mode == ToolMode::MODE_RUNNING)
-    {
-        modeStr = "running";
-    } else if (mode == ToolMode::MODE_IDLE)
-    {
-        modeStr = "idle";
-    }
+    std::string script = FormatStr(
+        "def move_to_pos():\n"
+        "\tmovej([%f,%f,%f,%f,%f,%f], a=1.4, v=1.05)\n"
+        "end\n",
+        x, y, z, rx, ry, rz);
 
-    ELITE_LOG_INFO("Tool mode : %s", modeStr.c_str());
+    ELITE_LOG_INFO("Sending MoveTo script: %s", script.c_str());
 
-    vector6d_t point{x, y, z, rx, ry, rz};
-    if (!m_driverPtr->writeServoj(point, 100, true, false))
+    if (!m_driverPtr->sendScript(script))
     {
-        ELITE_LOG_ERROR("Failed to move to start %s", PositionInfo(point).c_str());
+        ELITE_LOG_ERROR("Failed to send MoveTo script");
         return false;
     }
 
-    mode = m_rtsiPtr->getToolMode();
-    modeStr = "unknown";
-    if (mode == ToolMode::MODE_RUNNING)
-    {
-        modeStr = "running";
-    } else if (mode == ToolMode::MODE_IDLE)
-    {
-        modeStr = "idle";
-    }
-
-    std::this_thread::sleep_for(4s);
-
-    mode = m_rtsiPtr->getToolMode();
-    modeStr = "unknown";
-    if (mode == ToolMode::MODE_RUNNING)
-    {
-        modeStr = "running";
-    } else if (mode == ToolMode::MODE_IDLE)
-    {
-        modeStr = "idle";
-    }
-
-    ELITE_LOG_INFO("Tool mode : %s", modeStr.c_str());
     return true;
 }
 
-bool EliteCSRobot::GetPosition(RobotPosition& outPos) const
+bool EliteCSRobot::GetPosition(RobotPosition &outPos) const
 {
     CHECK_CONNECTION;
 
@@ -229,7 +202,7 @@ bool EliteCSRobot::GetPosition(RobotPosition& outPos) const
     double timestamp = std::chrono::duration<double>(clock::now().time_since_epoch()).count();
 
     outPos = RobotPosition{actualPos[0], actualPos[1], actualPos[2], actualPos[3], actualPos[4], actualPos[5],
-        timestamp};
+                           timestamp};
 
     return true;
 }
@@ -273,7 +246,7 @@ bool EliteCSRobot::SetSpeed(double percent_0_100)
     return true;
 }
 
-void EliteCSRobot::GetInfo(InfoDict& outInfo) const
+void EliteCSRobot::GetInfo(InfoDict &outInfo) const
 {
     outInfo["brand"] = "Elite";
     outInfo["type"] = "Robot";
@@ -282,7 +255,7 @@ void EliteCSRobot::GetInfo(InfoDict& outInfo) const
     outInfo["ip"] = m_config.robot_ip;
 }
 
-void EliteCSRobot::TestConnection(InfoDict& outResult)
+void EliteCSRobot::TestConnection(InfoDict &outResult)
 {
     outResult["success"] = false;
     if (!IsConnected())
@@ -302,41 +275,93 @@ void EliteCSRobot::TestConnection(InfoDict& outResult)
     outResult["position"] = pos;
 }
 
-bool EliteCSRobot::StartJogging(const std::string& axis)
+bool EliteCSRobot::StartJogging(const std::string &axis)
 {
+    CHECK_CONNECTION;
+
+    std::string ax = axis;
+    double direction = 1.0;
+
+    // Check for +/- prefix
+    if (!ax.empty() && (ax[0] == '+' || ax[0] == '-'))
+    {
+        if (ax[0] == '-')
+            direction = -1.0;
+        ax = ax.substr(1);
+    }
+
+    if (m_axisToIndex.count(ax) == 0)
+    {
+        ELITE_LOG_ERROR("Invalid axis : %s", axis.c_str());
+        return false;
+    }
+
+    int index = m_axisToIndex[ax];
+    double speeds[6] = {0};
+
+    // Default jogging speeds: 0.2 m/s for linear, 0.5 rad/s for joint
+    double jogSpeed = (index < 3) ? 0.2 : 0.5;
+    speeds[index] = direction * jogSpeed;
+
+    std::string script = FormatStr(
+        "def start_jog_proc():\n"
+        "\tspeedl([%f,%f,%f,%f,%f,%f], a=0.5, t=100)\n"
+        "end\n",
+        speeds[0], speeds[1], speeds[2], speeds[3], speeds[4], speeds[5]);
+
+    ELITE_LOG_INFO("Sending StartJogging script for axis %s", axis.c_str());
+    if (!m_driverPtr->sendScript(script))
+    {
+        ELITE_LOG_ERROR("Failed to send StartJogging script");
+        return false;
+    }
+
     return true;
 }
 
 bool EliteCSRobot::StopJogging()
 {
-    return true;
+    CHECK_CONNECTION;
+    std::string script = "def stop_proc():\n\tstopj(2.0)\nend\n";
+    return m_driverPtr->sendScript(script);
 }
 
-bool EliteCSRobot::JogMove(const std::string& axis, double speed, double distance)
+bool EliteCSRobot::JogMove(const std::string &axis, double speed, double distance)
 {
     CHECK_CONNECTION;
 
-    vector6d_t pos = m_rtsiPtr->getActualTCPPose();
-    vector6d_t velocity = m_rtsiPtr->getActualTCPVelocity();
-    if (m_axisToIndex.count(axis) == 0)
+    RobotPosition pos;
+    if (!GetPosition(pos))
+        return false;
+
+    if (axis == "x")
+        pos.x += distance;
+    else if (axis == "y")
+        pos.y += distance;
+    else if (axis == "z")
+        pos.z += distance;
+    else if (axis == "rx")
+        pos.rx += distance;
+    else if (axis == "ry")
+        pos.ry += distance;
+    else if (axis == "rz")
+        pos.rz += distance;
+    else
     {
         ELITE_LOG_ERROR("Invalid axis : %s", axis.c_str());
         return false;
     }
-    int index = m_axisToIndex[axis];
-    pos[index] += distance;
-    velocity[index] = speed;
 
-    if (!m_driverPtr->writeSpeedl(velocity, 200))
+    std::string script = FormatStr(
+        "def jog_move_proc():\n"
+        "\tmovel([%f,%f,%f,%f,%f,%f], v=%f)\n"
+        "end\n",
+        pos.x, pos.y, pos.z, pos.rx, pos.ry, pos.rz, speed);
+
+    ELITE_LOG_INFO("Sending JogMove script");
+    if (!m_driverPtr->sendScript(script))
     {
-        ELITE_LOG_ERROR("Failed to write line speed");
-        return false;
-    }
-
-
-    if (!m_driverPtr->writeServoj(pos, 200, true, false))
-    {
-        ELITE_LOG_ERROR("Failed to write servoj");
+        ELITE_LOG_ERROR("Failed to send JogMove script");
         return false;
     }
 
@@ -350,7 +375,7 @@ bool EliteCSRobot::SetMotionMode(MotionMode mode)
     return true;
 }
 
-bool EliteCSRobot::GetMotionMode(MotionMode& outMode) const
+bool EliteCSRobot::GetMotionMode(MotionMode &outMode) const
 {
     outMode = m_motionMode;
 
@@ -369,7 +394,7 @@ bool EliteCSRobot::IsMoving() const
     return robotState == RobotState::JOGGING || robotState == RobotState::MOVING;
 }
 
-bool EliteCSRobot::StartPathRecording(const std::string& pathName)
+bool EliteCSRobot::StartPathRecording(const std::string &pathName)
 {
     CHECK_CONNECTION;
 
@@ -418,7 +443,7 @@ bool EliteCSRobot::StopPathRecording()
     return true;
 }
 
-bool EliteCSRobot::AddPathPoint(const PathPoint* point) 
+bool EliteCSRobot::AddPathPoint(const PathPoint *point)
 {
     CHECK_CONNECTION;
 
@@ -441,20 +466,21 @@ bool EliteCSRobot::AddPathPoint(const PathPoint* point)
         }
 
         pathPoint.position = currentPos;
-    } else
+    }
+    else
     {
         pathPoint = *point;
     }
 
     m_recordPath.points.push_back(pathPoint);
 
-    RobotPosition& pos = pathPoint.position;
+    RobotPosition &pos = pathPoint.position;
     ELITE_LOG_INFO("add path point : %s", PositionInfo(pos).c_str());
 
     return true;
 }
 
-bool EliteCSRobot::GetRecordedPath(RobotPath& outPath)
+bool EliteCSRobot::GetRecordedPath(RobotPath &outPath)
 {
     std::lock_guard<std::mutex> lock(m_recordPathMutex);
 
@@ -473,7 +499,7 @@ bool EliteCSRobot::ClearRecordedPath()
     return true;
 }
 
-bool EliteCSRobot::PlayPath(const RobotPath& path, int loopCount)
+bool EliteCSRobot::PlayPath(const RobotPath &path, int loopCount)
 {
     CHECK_CONNECTION;
 
@@ -517,22 +543,22 @@ bool EliteCSRobot::IsPathPlaying() const
     return m_isPlaying;
 }
 
-bool EliteCSRobot::MoveLinear(const RobotPosition& start, const RobotPosition& end, double speed)
+bool EliteCSRobot::MoveLinear(const RobotPosition &start, const RobotPosition &end, double speed)
 {
     CHECK_CONNECTION;
 
-    if (!MoveTo(start.x, start.y, start.z, start.rx, start.ry, start.rz))
-    {
-        return false;
-    }
+    std::string script = FormatStr(
+        "def move_linear_proc():\n"
+        "\tmovej([%f,%f,%f,%f,%f,%f], a=1.4, v=1.05)\n"
+        "\tmovel([%f,%f,%f,%f,%f,%f], v=%f)\n"
+        "end\n",
+        start.x, start.y, start.z, start.rx, start.ry, start.rz,
+        end.x, end.y, end.z, end.rx, end.ry, end.rz, speed);
 
-    if (!SetSpeed(speed))
+    ELITE_LOG_INFO("Sending MoveLinear script");
+    if (!m_driverPtr->sendScript(script))
     {
-        return false;
-    }
-
-    if (!MoveTo(end.x, end.y, end.z, end.rx, end.ry, end.rz))
-    {
+        ELITE_LOG_ERROR("Failed to send MoveLinear script");
         return false;
     }
 
@@ -541,21 +567,21 @@ bool EliteCSRobot::MoveLinear(const RobotPosition& start, const RobotPosition& e
     return true;
 }
 
-bool EliteCSRobot::MoveCircular(const RobotPosition& center, double radius, double angle, double speed)
+bool EliteCSRobot::MoveCircular(const RobotPosition &center, double radius, double angle, double speed)
+{
+    CHECK_CONNECTION;
+    ELITE_LOG_ERROR("MoveCircular not implemented");
+    return false;
+}
+
+bool EliteCSRobot::SetWorkCoordinateSystem(const WcsDict &wcs)
 {
     CHECK_CONNECTION;
 
     return true;
 }
 
-bool EliteCSRobot::SetWorkCoordinateSystem(const WcsDict& wcs)
-{
-    CHECK_CONNECTION;
-
-    return true;
-}
-
-bool EliteCSRobot::GetWorkCoordinateSystem(WcsDict& outWcs) const
+bool EliteCSRobot::GetWorkCoordinateSystem(WcsDict &outWcs) const
 {
     CHECK_CONNECTION;
 
@@ -597,29 +623,32 @@ bool EliteCSRobot::UnregisterStateCallback(StateCallback cb)
     return true;
 }
 
-bool EliteCSRobot::MoveTrajectory(const std::vector<ELITE::vector6d_t>& trajectory, float pointTime, float blendRadius,
-    bool isCartesian)
+bool EliteCSRobot::MoveTrajectory(const std::vector<ELITE::vector6d_t> &trajectory, float pointTime, float blendRadius,
+                                  bool isCartesian)
 {
     CHECK_CONNECTION;
 
     std::promise<TrajectoryMotionResult> moveDonePromise;
-    m_driverPtr->setTrajectoryResultCallback([&](TrajectoryMotionResult result) { moveDonePromise.set_value(result); });
+    m_driverPtr->setTrajectoryResultCallback([&](TrajectoryMotionResult result)
+                                             { moveDonePromise.set_value(result); });
 
     ELITE_LOG_INFO("Trajectory motion start");
-    if(!m_driverPtr->writeTrajectoryControlAction(ELITE::TrajectoryControlAction::START, trajectory.size(), 200))
+    if (!m_driverPtr->writeTrajectoryControlAction(ELITE::TrajectoryControlAction::START, trajectory.size(), 200))
     {
         ELITE_LOG_ERROR("Failed to start trajectory motion");
         return false;
     }
 
-    for (const auto& pos : trajectory) {
+    for (const auto &pos : trajectory)
+    {
         if (!m_driverPtr->writeTrajectoryPoint(pos, pointTime, blendRadius, isCartesian))
         {
             ELITE_LOG_ERROR("Failed to write trajectory point");
             return false;
         }
         // Send NOOP command to avoid timeout.
-        if(!m_driverPtr->writeTrajectoryControlAction(ELITE::TrajectoryControlAction::NOOP, 0, 200)) {
+        if (!m_driverPtr->writeTrajectoryControlAction(ELITE::TrajectoryControlAction::NOOP, 0, 200))
+        {
             ELITE_LOG_ERROR("Failed to send NOOP command");
             return false;
         }
@@ -629,7 +658,8 @@ bool EliteCSRobot::MoveTrajectory(const std::vector<ELITE::vector6d_t>& trajecto
     while (moveDoneFuture.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready)
     {
         // Wait for the trajectory motion to complete, and send NOOP command to avoid timeout.
-        if(!m_driverPtr->writeTrajectoryControlAction(ELITE::TrajectoryControlAction::NOOP, 0, 200)) {
+        if (!m_driverPtr->writeTrajectoryControlAction(ELITE::TrajectoryControlAction::NOOP, 0, 200))
+        {
             ELITE_LOG_ERROR("Failed to send NOOP command");
             return false;
         }
@@ -637,7 +667,7 @@ bool EliteCSRobot::MoveTrajectory(const std::vector<ELITE::vector6d_t>& trajecto
     auto result = moveDoneFuture.get();
     ELITE_LOG_INFO("Trajectory motion completed with result: %d", result);
 
-    if(!m_driverPtr->writeIdle(0))
+    if (!m_driverPtr->writeIdle(0))
     {
         ELITE_LOG_ERROR("Failed to write idle command");
         return false;
@@ -646,8 +676,8 @@ bool EliteCSRobot::MoveTrajectory(const std::vector<ELITE::vector6d_t>& trajecto
     return result == TrajectoryMotionResult::SUCCESS;
 }
 
-template<typename T>
-bool GetAnyValue(const std::any& any, T& value)
+template <typename T>
+bool GetAnyValue(const std::any &any, T &value)
 {
     if (auto p = std::any_cast<T>(&any); p != nullptr)
     {
@@ -658,8 +688,8 @@ bool GetAnyValue(const std::any& any, T& value)
     return false;
 }
 
-template<typename T>
-bool GetConfigVal(const ConfigDict& configDict, const std::string& key, const T& defaultVal, T& val)
+template <typename T>
+bool GetConfigVal(const ConfigDict &configDict, const std::string &key, const T &defaultVal, T &val)
 {
     if (configDict.count(key) != 0)
     {
@@ -670,8 +700,7 @@ bool GetConfigVal(const ConfigDict& configDict, const std::string& key, const T&
     return true;
 }
 
-
-bool EliteCSRobot::ParseConfig(const ConfigDict& configDict, Config& config)
+bool EliteCSRobot::ParseConfig(const ConfigDict &configDict, Config &config)
 {
     if (!GetConfigVal(configDict, "inputRecipePath", std::string("input_recipe.txt"), config.inputRecipePath))
     {
@@ -686,19 +715,18 @@ bool EliteCSRobot::ParseConfig(const ConfigDict& configDict, Config& config)
     return true;
 }
 
-
-void EliteCSRobot::PlaybackWorker(const RobotPath& path, int loop_count)
+void EliteCSRobot::PlaybackWorker(const RobotPath &path, int loop_count)
 {
     for (int loop = 0; loop < loop_count; ++loop)
     {
-        for (const auto& pt : path.points)
+        for (const auto &pt : path.points)
         {
             if (m_stopRequested)
             {
                 break;
             }
 
-            const auto& p = pt.position;
+            const auto &p = pt.position;
             if (!MoveTo(p.x, p.y, p.z, p.rx, p.ry, p.rz))
             {
                 ELITE_LOG_ERROR("Failed to move to path point");
@@ -717,14 +745,12 @@ void EliteCSRobot::PlaybackWorker(const RobotPath& path, int loop_count)
     m_isPlaying = false;
 }
 
-
-std::string EliteCSRobot::PositionInfo(const RobotPosition& pos)
+std::string EliteCSRobot::PositionInfo(const RobotPosition &pos)
 {
     return FormatStr("[%f, %f, %f, %f, %f, %f] %f", pos.x, pos.y, pos.z, pos.rx, pos.ry, pos.rz, pos.timestamp);
 }
 
-std::string EliteCSRobot::PositionInfo(const vector6d_t& pos)
+std::string EliteCSRobot::PositionInfo(const vector6d_t &pos)
 {
     return FormatStr("[%f, %f, %f, %f, %f, %f]", pos[0], pos[1], pos[2], pos[3], pos[4], pos[5]);
 }
-
