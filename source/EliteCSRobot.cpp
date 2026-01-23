@@ -177,7 +177,7 @@ bool EliteCSRobot::MoveTo(double x, double y, double z,
 
     std::string script = FormatStr(
         "def move_to_pos():\n"
-        "\tmovej([%f,%f,%f,%f,%f,%f], a=1.4, v=1.05)\n"
+        "\tmovel([%f,%f,%f,%f,%f,%f], a=0.25, v=0.5)\n"
         "end\n",
         x, y, z, rx, ry, rz);
 
@@ -305,7 +305,7 @@ bool EliteCSRobot::StartJogging(const std::string &axis)
 
     std::string script = FormatStr(
         "def start_jog_proc():\n"
-        "\tspeedl([%f,%f,%f,%f,%f,%f], a=0.5, t=100)\n"
+        "\tspeedl([%f,%f,%f,%f,%f,%f], a=0.25, t=100)\n"
         "end\n",
         speeds[0], speeds[1], speeds[2], speeds[3], speeds[4], speeds[5]);
 
@@ -316,6 +316,8 @@ bool EliteCSRobot::StartJogging(const std::string &axis)
         return false;
     }
 
+    m_robotState = RobotState::JOGGING;
+
     return true;
 }
 
@@ -323,7 +325,14 @@ bool EliteCSRobot::StopJogging()
 {
     CHECK_CONNECTION;
     std::string script = "def stop_proc():\n\tstopj(2.0)\nend\n";
-    return m_driverPtr->sendScript(script);
+    if (!m_driverPtr->sendScript(script))
+    {
+        return false;
+    }
+
+    m_robotState = RobotState::IDLE;
+
+    return true;
 }
 
 bool EliteCSRobot::JogMove(const std::string &axis, double speed, double distance)
@@ -549,7 +558,7 @@ bool EliteCSRobot::MoveLinear(const RobotPosition &start, const RobotPosition &e
 
     std::string script = FormatStr(
         "def move_linear_proc():\n"
-        "\tmovej([%f,%f,%f,%f,%f,%f], a=1.4, v=1.05)\n"
+        "\tmovel([%f,%f,%f,%f,%f,%f], a=0.25, v=0.5)\n"
         "\tmovel([%f,%f,%f,%f,%f,%f], v=%f)\n"
         "end\n",
         start.x, start.y, start.z, start.rx, start.ry, start.rz,
