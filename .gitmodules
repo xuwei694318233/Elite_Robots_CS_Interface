@@ -1,0 +1,3 @@
+[submodule "Elite_Robots_CS_SDK"]
+	path = Elite_Robots_CS_SDK
+	url = https://github.com/Elite-Robots/Elite_Robots_CS_SDK.git
