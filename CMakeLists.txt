@@ -26,7 +26,7 @@ else()
 endif()
 
 # -------------------- 导入第三方 SDK（多配置友好） --------------------
-include_directories("${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/EliteSDK/include")
+# include_directories removed: dependencies prefer target_include_directories
 
 # 1. 定义两套 IMPORTED 目标（Debug / Release）
 set(SDK_LIB_DIR_DEBUG   "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/EliteSDK/bin/${PLAT}/Debug")
@@ -83,6 +83,7 @@ add_library(EliteCSRobot SHARED source/EliteCSRobot.cpp)
 target_include_directories(EliteCSRobot
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/EliteSDK/include>
         $<INSTALL_INTERFACE:include>)
 target_compile_definitions(EliteCSRobot PRIVATE ROBOT_EXPORT_LIBRARY)
 target_link_libraries(EliteCSRobot PUBLIC elite_sdk)   # 自动切换 Debug/Release
@@ -107,4 +108,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         COMMAND ${CMAKE_COMMAND} -E copy_directory
         "$<IF:$<CONFIG:Debug>,${SDK_LIB_DIR_DEBUG},${SDK_LIB_DIR_RELEASE}>"
         "$<TARGET_FILE_DIR:elite_test>")
+endif()
+
+# -------------------- 测试 --------------------
+option(BUILD_TESTING "Build the testing tree." ON)
+if(BUILD_TESTING)
+    enable_testing()
+    add_subdirectory(test)
 endif()

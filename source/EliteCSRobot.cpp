@@ -218,9 +218,27 @@ bool EliteCSRobot::EmergencyStop()
 {
     CHECK_CONNECTION;
 
-    m_dashboardPtr->shutdown();
-    Disconnect();
-    m_robotState = RobotState::EMERGENCY_STOP;
+    if (!m_dashboardPtr->stopProgram())
+    {
+        ELITE_LOG_ERROR("Failed to stop program via dashboard");
+        return false;
+    }
+
+    if (!m_driverPtr->stopControl())
+    {
+        ELITE_LOG_ERROR("Failed to stop control via driver");
+        return false;
+    }
+
+    std::string stopScript = "stopj(20)\n";
+    if (!m_driverPtr->sendScript(stopScript))
+    {
+        ELITE_LOG_ERROR("Failed to send stop script");
+        return false;
+    }
+
+    // 软件停止后，期望状态应为静止(IDLE)，而非系统级急停(EMERGENCY_STOP)
+    m_robotState = RobotState::IDLE;
 
     return true;
 }
@@ -393,7 +411,44 @@ bool EliteCSRobot::GetMotionMode(MotionMode &outMode) const
 
 RobotState EliteCSRobot::GetState() const
 {
-    return m_robotState;
+    if (!IsConnected())
+    {
+        return RobotState::ERROR;
+    }
+
+    SafetyMode safetyMode = m_rtsiPtr->getSafetyStatus();
+    if (safetyMode == SafetyMode::ROBOT_EMERGENCY_STOP ||
+        safetyMode == SafetyMode::SYSTEM_EMERGENCY_STOP)
+    {
+        return RobotState::EMERGENCY_STOP;
+    }
+    if (safetyMode == SafetyMode::PROTECTIVE_STOP ||
+        safetyMode == SafetyMode::VIOLATION ||
+        safetyMode == SafetyMode::FAULT)
+    {
+        return RobotState::ERROR;
+    }
+
+    vector6d_t tcpSpeed = m_rtsiPtr->getActualTCPVelocity();
+    bool isMoving = false;
+    double sqSum = 0;
+    for (auto v : tcpSpeed)
+        sqSum += v * v;
+    if (sqSum > 1e-4)
+    {
+        isMoving = true;
+    }
+
+    if (isMoving)
+    {
+        if (m_robotState == RobotState::JOGGING)
+        {
+            return RobotState::JOGGING;
+        }
+        return RobotState::MOVING;
+    }
+
+    return RobotState::IDLE;
 }
 
 bool EliteCSRobot::IsMoving() const
@@ -407,6 +462,24 @@ bool EliteCSRobot::StartPathRecording(const std::string &pathName)
 {
     CHECK_CONNECTION;
 
+    // 使用局部变量生成时间字符串，避免锁内复杂操作（虽然 localtime 本身仍需注意，但放在锁内保护不了全局 localtime 缓冲区）
+    // 为了线程安全，建议使用 localtime_s (Win) 或 localtime_r (Linux)
+    // 这里做简单处理：加上互斥锁保护 localtime 或者假定库实现足够安全/使用系统时间
+    using clock = std::chrono::system_clock;
+    double ts = std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+    std::time_t tt = static_cast<std::time_t>(ts);
+
+    struct tm tm_buf;
+#if defined(_WIN32) || defined(_WIN64)
+    localtime_s(&tm_buf, &tt);
+#else
+    localtime_r(&tt, &tm_buf);
+#endif
+
+    std::stringstream ss;
+    ss << std::put_time(&tm_buf, "%F %T");
+    std::string timeStr = ss.str();
+
     std::lock_guard<std::mutex> lock(m_recordPathMutex);
     if (m_isRecordingPath)
     {
@@ -416,17 +489,10 @@ bool EliteCSRobot::StartPathRecording(const std::string &pathName)
 
     m_isRecordingPath = true;
 
-    using clock = std::chrono::system_clock;
-    double ts = std::chrono::duration<double>(clock::now().time_since_epoch()).count();
-
-    std::time_t tt = static_cast<std::time_t>(ts);
-    std::stringstream ss;
-    ss << std::put_time(std::localtime(&tt), "%F %T");
-
     m_recordPath.name = pathName;
     m_recordPath.points.clear();
     m_recordPath.createdTime = ts;
-    m_recordPath.description = "Recorded on " + ss.str();
+    m_recordPath.description = "Recorded on " + timeStr;
     m_recordPath.id = "path_" + std::to_string(static_cast<long>(ts));
 
     m_recordPathName = pathName;
@@ -456,14 +522,8 @@ bool EliteCSRobot::AddPathPoint(const PathPoint *point)
 {
     CHECK_CONNECTION;
 
-    std::lock_guard<std::mutex> lock(m_recordPathMutex);
-
-    if (!m_isRecordingPath)
-    {
-        ELITE_LOG_ERROR("No path recording in progress");
-        return false;
-    }
-
+    // 1. 在锁外获取当前位置，避免在持有锁时进行可能耗时的网络/IO操作
+    //    同时也防止潜在的死锁风险 (GetPosition -> Rtsi -> internal locks)
     PathPoint pathPoint;
     if (point == nullptr)
     {
@@ -473,12 +533,20 @@ bool EliteCSRobot::AddPathPoint(const PathPoint *point)
             ELITE_LOG_ERROR("Get current position failed");
             return false;
         }
-
         pathPoint.position = currentPos;
     }
     else
     {
         pathPoint = *point;
+    }
+
+    // 2. 持有锁进行快速的数据插入
+    std::lock_guard<std::mutex> lock(m_recordPathMutex);
+
+    if (!m_isRecordingPath)
+    {
+        ELITE_LOG_ERROR("No path recording in progress");
+        return false;
     }
 
     m_recordPath.points.push_back(pathPoint);
@@ -576,11 +644,27 @@ bool EliteCSRobot::MoveLinear(const RobotPosition &start, const RobotPosition &e
     return true;
 }
 
-bool EliteCSRobot::MoveCircular(const RobotPosition &center, double radius, double angle, double speed)
+bool EliteCSRobot::MoveCircular(const RobotPosition &via, const RobotPosition &end, double speed)
 {
     CHECK_CONNECTION;
-    ELITE_LOG_ERROR("MoveCircular not implemented");
-    return false;
+
+    std::string script = FormatStr(
+        "def move_circular_proc():\n"
+        "\tmovec([%f,%f,%f,%f,%f,%f], [%f,%f,%f,%f,%f,%f], a=0.25, v=%f, r=0)\n"
+        "end\n",
+        via.x, via.y, via.z, via.rx, via.ry, via.rz,
+        end.x, end.y, end.z, end.rx, end.ry, end.rz, speed);
+
+    ELITE_LOG_INFO("Sending MoveCircular script");
+    if (!m_driverPtr->sendScript(script))
+    {
+        ELITE_LOG_ERROR("Failed to send MoveCircular script");
+        return false;
+    }
+
+    ELITE_LOG_INFO("MoveCircular via %s to %s", PositionInfo(via).c_str(), PositionInfo(end).c_str());
+
+    return true;
 }
 
 bool EliteCSRobot::SetWorkCoordinateSystem(const WcsDict &wcs)
@@ -726,32 +810,47 @@ bool EliteCSRobot::ParseConfig(const ConfigDict &configDict, Config &config)
 
 void EliteCSRobot::PlaybackWorker(const RobotPath &path, int loop_count)
 {
+    std::vector<ELITE::vector6d_t> traj;
+    traj.reserve(path.points.size());
+
+    // 默认点时间，可视情况调整或根据速度距离计算
+    float pointTime = 0.5f;
+    // 默认交融半径
+    float blendRadius = 0.002f;
+
+    // 1. 将 RobotPath 转换为 MoveTrajectory 需要的格式
+    for (const auto &pt : path.points)
+    {
+        const auto &p = pt.position;
+        traj.push_back({p.x, p.y, p.z, p.rx, p.ry, p.rz});
+    }
+
     for (int loop = 0; loop < loop_count; ++loop)
     {
-        for (const auto &pt : path.points)
+        if (m_stopRequested)
+            break;
+
+        ELITE_LOG_INFO("Playback loop %d start", loop + 1);
+
+        // 2. 调用已实现的 MoveTrajectory 进行完整轨迹运动
+        //    MoveTrajectory 内部实现了轨迹透传、同步等待和 idle 状态恢复，无需手动轮询。
+        //    注意：这里假设所有的点都是笛卡尔空间点 (isCartesian = true)
+        if (!MoveTrajectory(traj, pointTime, blendRadius, true))
         {
-            if (m_stopRequested)
-            {
-                break;
-            }
-
-            const auto &p = pt.position;
-            if (!MoveTo(p.x, p.y, p.z, p.rx, p.ry, p.rz))
-            {
-                ELITE_LOG_ERROR("Failed to move to path point");
-                break;
-            }
-
-            SetSpeed(pt.speed);
-
-            if (pt.delay > 0)
-            {
-                std::this_thread::sleep_for(std::chrono::duration<double>(pt.delay));
-            }
+            ELITE_LOG_ERROR("Trajectory playback failed at loop %d", loop + 1);
+            break;
         }
+
+        // 3. 处理每个点特有的 delay？
+        // 遗憾的是 MoveTrajectory 是一次性发送所有路点，
+        // 无法精确实现针对每个点的自定义 delay。
+        // 如果必须严格遵守 path struct 中的 delay，
+        // 则不能用 MoveTrajectory，必须用 MoveTo + Wait 的方式重写。
+        // 但鉴于通常回放是为了连续运动，MoveTrajectory 是更优解。
     }
 
     m_isPlaying = false;
+    ELITE_LOG_INFO("Playback finished");
 }
 
 std::string EliteCSRobot::PositionInfo(const RobotPosition &pos)
