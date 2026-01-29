@@ -1,4 +1,10 @@
-## 目录结构树
+# Elite Robots CS Interface
+
+跨平台 C++ 封装库，用于连接与控制 Elite 机器人 CS 系列，内置 GoogleTest 单元测试。
+
+---
+
+## 目录结构
 
 <pre>
 Elite_Robots_CS_Interface根目录
@@ -21,68 +27,89 @@ Elite_Robots_CS_Interface根目录
 │  ├─ StateTest.cpp        # 状态查询与信息获取测试
 │  └─ PathTest.cpp         # 路径录制与回放功能测试
 ├─ thirdparty
-│  └─ EliteSDK             # SDK依赖库文件
-│     ├─ include           # 第三方头文件
-│     └─ bin               # 预编译二进制(dll/lib/so)
+│  ├─ EliteSDK             # SDK依赖库文件
+│  │  ├─ include           # 第三方头文件
+│  │  └─ bin               # 预编译二进制(dll/lib/so)
+│  └─ gtest                # GTest源码子模块（空目录→git submodule）
 ├─ build.bat               # Windows构建脚本
 ├─ build.sh                # Linux构建脚本
 ├─ CMakeLists.txt
 └─ README.md
 </pre>
 
-## 构建与测试
+---
 
-本项目采用 CMake 构建，并提供了便捷的批处理脚本。
+## 快速开始
 
-### Windows
+### 1. 克隆（含子模块）
 
-推荐在 **x64 Native Tools Command Prompt for VS 2019/2022** 中执行：
+```bash
+git clone --recurse-submodules https://github.com/your_name/Elite_Robots_CS_Interface.git
+cd Elite_Robots_CS_Interface
+```
 
-1. **编译**
+> 若已克隆但未带子模块，执行：
+> ```bash
+> git submodule update --init --recursive
+> ```
 
-   ```batch
-   # 1. 仅编译核心库 (Release)
-   build.bat
+### 2. 一键构建
 
-   # 2. 仅编译核心库 (Debug)
-   build.bat Debug
+**Windows**（推荐 **x64 Native Tools Command Prompt**）：
+```powershell
+# 仅编译核心库（Release）
+build.bat
 
-   # 3. 编译核心库 + 单元测试 (Release/Debug)
-   build.bat Release test
-   build.bat Debug test
-   ```
+# 编译核心库 + 单元测试（Debug）
+build.bat Debug test
+```
 
-2. **运行测试**
-   （需先执行带 `test` 参数的构建命令）
+**Linux**：
+```bash
+chmod +x build.sh
+# 编译核心库 + 单元测试（Debug）
+./build.sh Debug test
+```
 
-   ```batch
-   # 方式一：使用 ctest (在根目录执行)
-   ctest --test-dir build/win-Debug -C Debug --output-on-failure
+### 3. 运行测试
+**注意**：`ctest -C` 必须与**构建配置**一致！
 
-   # 方式二：直接运行测试程序
-   build\win-Debug\test\Debug\ConnectionTest.exe
-   ```
+**Windows**（**Release** 示例）：
+```powershell
+ctest --test-dir build\win-Release -C Release --output-on-failure
+# Debug 时：
+#   ctest --test-dir build\win-Debug -C Debug --output-on-failure
+```
 
-### Linux
+**Linux**（**Release** 示例）：
+```bash
+ctest --test-dir build/linux-Release --output-on-failure
+# Debug 时：
+#   ctest --test-dir build/linux-Debug --output-on-failure
+```
 
-1. **编译**
+---
 
-   ```bash
-   chmod +x build.sh
+## 构建选项
 
-   # 1. 仅编译核心库 (Release)
-   ./build.sh
+| 参数 | 说明 |
+| --- | --- |
+| `Release` / `Debug` | 选择构建配置 |
+| `test` | 同时编译 GoogleTest 单元测试 |
 
-   # 2. 仅编译核心库 (Debug)
-   ./build.sh Debug
+---
 
-   # 3. 编译核心库 + 单元测试
-   ./build.sh Release test
-   ./build.sh Debug test
-   ```
+## 依赖说明
 
-2. **运行测试**
-   ```bash
-   # 在构建目录运行 ctest
-   ctest --test-dir build/linux-Debug --output-on-failure
-   ```
+- **CMake ≥ 3.16**
+- **C++17 编译器**
+- **操作系统**：Windows 10/11（VS2019/2022）或主流 Linux 发行版
+- **第三方库**：
+  - EliteSDK（已预置）
+  - GoogleTest（源码子模块，无需系统安装）
+
+---
+
+## 许可证
+
+[在此处填写你的许可证信息]

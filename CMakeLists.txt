@@ -110,9 +110,24 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         "$<TARGET_FILE_DIR:elite_test>")
 endif()
 
-# -------------------- 测试 --------------------
+# -------------------- 测试（含 GTest 子模块） --------------------
 option(BUILD_TESTING "Build the testing tree." ON)
 if(BUILD_TESTING)
     enable_testing()
+    # 1. 强制共享库 + 统一 CRT（必须放在 add_subdirectory 之前，且 FORCE）
+    set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+    set(BUILD_GMOCK          ON CACHE BOOL "" FORCE)
+    set(INSTALL_GTEST        OFF CACHE BOOL "" FORCE)
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS    ON CACHE BOOL "" FORCE)   # 全局共享（可选）
+    set(gtest_build_shared   ON CACHE BOOL "" FORCE)   # 仅 GTest 共享
+    add_subdirectory(thirdparty/gtest EXCLUDE_FROM_ALL)
+    # 2. 统一复制 SDK（仅 Windows）
+    if(WIN32)
+        add_custom_command(TARGET elite_test POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "$<IF:$<CONFIG:Debug>,${SDK_LIB_DIR_DEBUG},${SDK_LIB_DIR_RELEASE}>"
+            "$<TARGET_FILE_DIR:elite_test>")
+    endif()
     add_subdirectory(test)
 endif()
