@@ -91,6 +91,12 @@ namespace ROBOT
     public:
         bool MoveTrajectory(const std::vector<ELITE::vector6d_t> &trajectory, float pointTime, float blendRadius,
                             bool isCartesian);
+        
+        /*--------  同步运动  --------*/
+        bool WaitForMotionComplete(int timeoutMs = 10000);
+        bool MoveToSync(double x, double y, double z, double rx = 0, double ry = 0, double rz = 0, int timeoutMs = 10000);
+        bool MoveToWithCallback(double x, double y, double z, double rx = 0, double ry = 0, double rz = 0,
+                               std::function<void(const RobotPosition&)> progressCallback = nullptr, int timeoutMs = 10000);
 
     private:
         struct Config
@@ -104,6 +110,10 @@ namespace ROBOT
         void PlaybackWorker(const RobotPath &path, int loopCount);
         std::string PositionInfo(const RobotPosition &pos);
         std::string PositionInfo(const ELITE::vector6d_t &pos);
+        void StartPositionMonitoring();
+        void StopPositionMonitoring();
+        void PositionMonitorWorker();
+        void SetMoveCommandSent();
 
     private:
         std::unique_ptr<ELITE::EliteDriver> m_driverPtr;
@@ -111,24 +121,35 @@ namespace ROBOT
         std::unique_ptr<ELITE::RtsiIOInterface> m_rtsiPtr;
         ELITE::EliteDriverConfig m_config;
 
-        bool m_isConnect;
-        RobotState m_robotState;
-        MotionMode m_motionMode;
+        bool m_isConnect{false};
+        RobotState m_robotState{RobotState::IDLE};
+        MotionMode m_motionMode{MotionMode::AUTOMATIC};
 
         /*--------  路径记录  --------*/
         std::mutex m_recordPathMutex;
-        bool m_isRecordingPath;
+        bool m_isRecordingPath{false};
         RobotPath m_recordPath;
         std::string m_recordPathName;
 
         /*--------  路径回放  --------*/
-        std::atomic<bool> m_isPlaying;
-        std::atomic<bool> m_stopRequested;
+        std::atomic<bool> m_isPlaying{false};
+        std::atomic<bool> m_stopRequested{false};
         std::thread m_playbackThread;
 
         /*--------  回调注册  --------*/
         std::unique_ptr<PositionCallback> m_posCallbackPtr;
         std::unique_ptr<StateCallback> m_stateCallbackPtr;
+
+        /*--------  位置监控  --------*/
+        std::thread m_positionMonitorThread;
+        std::atomic<bool> m_stopPositionMonitor{false};
+        double m_positionThreshold{0.001}; // 1mm阈值
+        double m_callbackIntervalMs{100};  // 100ms间隔
+
+        /*--------  运动状态跟踪  --------*/
+        std::atomic<bool> m_hasPendingMoveCommand{false};
+        std::chrono::steady_clock::time_point m_lastMoveCommandTime;
+        mutable std::mutex m_motionStateMutex;
 
         static std::unordered_map<std::string, int> m_axisToIndex;
     };

@@ -99,6 +99,60 @@ void TestBasicMotion(EliteCSRobot &robot, RobotPosition &currentPos)
     }
 }
 
+void TestSyncMotion(EliteCSRobot &robot)
+{
+    std::cout << "\n[TEST] Sync Motion Methods\n";
+
+    RobotPosition currentPos;
+    if (!robot.GetPosition(currentPos))
+    {
+        std::cerr << "Failed to get initial position\n";
+        return;
+    }
+    PrintPosition(currentPos, "Sync Start Pos");
+
+    RobotPosition targetPos = currentPos;
+    targetPos.z -= 0.01; // Move down 1cm
+
+    // Test MoveToSync
+    std::cout << "Testing MoveToSync...\n";
+    if (robot.MoveToSync(targetPos.x, targetPos.y, targetPos.z, targetPos.rx, targetPos.ry, targetPos.rz))
+    {
+        RobotPosition newPos;
+        robot.GetPosition(newPos);
+        PrintPosition(newPos, "Sync End Pos");
+        std::cout << "[SUCCESS] MoveToSync completed\n";
+    }
+    else
+    {
+        std::cerr << "[FAILED] MoveToSync failed\n";
+    }
+
+    // Test MoveToWithCallback
+    std::cout << "Testing MoveToWithCallback...\n";
+    targetPos.z += 0.015; // Move up 1.5cm
+    
+    int callbackCount = 0;
+    auto progressCallback = [&](const RobotPosition &pos)
+    {
+        callbackCount++;
+        std::cout << "Progress " << callbackCount << ": z=" << pos.z << std::endl;
+    };
+
+    if (robot.MoveToWithCallback(targetPos.x, targetPos.y, targetPos.z, 
+                                 targetPos.rx, targetPos.ry, targetPos.rz, progressCallback))
+    {
+        RobotPosition finalPos;
+        robot.GetPosition(finalPos);
+        PrintPosition(finalPos, "Callback End Pos");
+        std::cout << "[SUCCESS] MoveToWithCallback completed, " << callbackCount << " callbacks triggered\n";
+    }
+    else
+    {
+        std::cerr << "[FAILED] MoveToWithCallback failed\n";
+    }
+}
+
 void TestLinearMotion(EliteCSRobot &robot, RobotPosition &currentPos)
 {
     std::cout << "\n[TEST] MoveLinear (Z - 0.02m)\n";
@@ -215,8 +269,15 @@ void Testcallbacks(EliteCSRobot &robot)
 {
     std::cout << "\n[TEST] Callbacks\n";
     int updateCount = 0;
+    RobotPosition lastPos;
     auto posCb = [&](const RobotPosition &p)
-    { updateCount++; };
+    {
+        updateCount++;
+        lastPos = p;
+        std::cout << "Position callback #" << updateCount
+                  << ": x=" << p.x << ", y=" << p.y << ", z=" << p.z
+                  << ", timestamp=" << p.timestamp << std::endl;
+    };
 
     robot.RegisterPositionCallback(posCb);
     std::cout << "Callback registered. Jogging small amount...\n";
@@ -278,6 +339,7 @@ int main()
     if (robot.GetPosition(currentPos))
     {
         TestBasicMotion(robot, currentPos);
+        TestSyncMotion(robot);  // 添加同步运动测试
         TestLinearMotion(robot, currentPos);
         TestCircularMotion(robot, currentPos);
         TestJogging(robot);

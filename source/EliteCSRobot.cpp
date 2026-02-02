@@ -6,6 +6,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cstdarg>
+#include <cmath>
 
 #include <chrono>
 using namespace std::chrono_literals; // 打开字面量
@@ -46,19 +47,13 @@ EliteCSRobot::EliteCSRobot(const EliteDriverConfig &config)
     m_driverPtr = std::make_unique<EliteDriver>(config);
     m_dashboardPtr = std::make_unique<DashboardClient>();
 
-    m_isConnect = false;
-    m_robotState = RobotState::IDLE;
-    m_motionMode = MotionMode::AUTOMATIC;
-
-    m_isPlaying = false;
-    m_stopRequested = false;
-
     m_posCallbackPtr = nullptr;
     m_stateCallbackPtr = nullptr;
 }
 
 EliteCSRobot::~EliteCSRobot()
 {
+    StopPositionMonitoring();
     StopPathPlayback();
     Disconnect();
 }
@@ -189,6 +184,8 @@ bool EliteCSRobot::MoveTo(double x, double y, double z,
         return false;
     }
 
+    // 标记有运动命令
+    SetMoveCommandSent();
     return true;
 }
 
@@ -453,9 +450,46 @@ RobotState EliteCSRobot::GetState() const
 
 bool EliteCSRobot::IsMoving() const
 {
-    RobotState robotState = GetState();
+    // 1. 检查是否有待处理的运动命令
+    if (m_hasPendingMoveCommand.load()) {
+        return true;
+    }
 
-    return robotState == RobotState::JOGGING || robotState == RobotState::MOVING;
+    // 2. 检查关节状态和TCP速度
+    try {
+        // 优先检查JointMode - 更直接反映电机状态
+        auto jointModes = m_rtsiPtr->getJointMode();
+        bool anyRunning = false;
+        for (const auto& mode : jointModes) {
+            if (mode == JointMode::MODE_RUNNING) {
+                anyRunning = true;
+                break;
+            }
+        }
+        
+        // 结合TCP速度验证，避免速度阈值判断误差
+        vector6d_t tcpSpeed = m_rtsiPtr->getActualTCPVelocity();
+        double sqSum = 0;
+        for (auto v : tcpSpeed)
+            sqSum += v * v;
+        
+        // 任一条件满足则认为正在运动
+        if (anyRunning || sqSum > 1e-4) {
+            return true;
+        }
+    } catch (const std::exception& e) {
+        ELITE_LOG_ERROR("Failed to check motion state: %s", e.what());
+        return false;
+    }
+
+    return false;
+}
+
+void EliteCSRobot::SetMoveCommandSent()
+{
+    std::lock_guard<std::mutex> lock(m_motionStateMutex);
+    m_hasPendingMoveCommand.store(true);
+    m_lastMoveCommandTime = std::chrono::steady_clock::now();
 }
 
 bool EliteCSRobot::StartPathRecording(const std::string &pathName)
@@ -691,7 +725,7 @@ bool EliteCSRobot::ToggleWorkCoordinateSystem()
 bool EliteCSRobot::RegisterPositionCallback(PositionCallback cb)
 {
     m_posCallbackPtr = std::make_unique<PositionCallback>(cb);
-
+    StartPositionMonitoring(); // 启动监控
     return true;
 }
 
@@ -705,7 +739,7 @@ bool EliteCSRobot::RegisterStateCallback(StateCallback cb)
 bool EliteCSRobot::UnregisterPositionCallback(PositionCallback cb)
 {
     m_posCallbackPtr = nullptr;
-
+    StopPositionMonitoring(); // 停止监控
     return true;
 }
 
@@ -861,4 +895,163 @@ std::string EliteCSRobot::PositionInfo(const RobotPosition &pos)
 std::string EliteCSRobot::PositionInfo(const vector6d_t &pos)
 {
     return FormatStr("[%f, %f, %f, %f, %f, %f]", pos[0], pos[1], pos[2], pos[3], pos[4], pos[5]);
+}
+
+void EliteCSRobot::StartPositionMonitoring()
+{
+    if (m_positionMonitorThread.joinable()) {
+        return;
+    }
+
+    m_stopPositionMonitor = false;
+    m_positionMonitorThread = std::thread([this]() {
+        PositionMonitorWorker();
+    });
+}
+
+void EliteCSRobot::StopPositionMonitoring()
+{
+    m_stopPositionMonitor = true;
+    if (m_positionMonitorThread.joinable()) {
+        m_positionMonitorThread.join();
+    }
+}
+
+void EliteCSRobot::PositionMonitorWorker()
+{
+    RobotPosition lastPos, currentPos;
+    bool firstRun = true;
+    bool wasMoving = false;
+    int noMovementCount = 0;
+    
+    while (!m_stopPositionMonitor && IsConnected()) {
+        // 直接使用RTSI获取位置，避免调用GetPosition
+        if (m_rtsiPtr) {
+            try {
+                vector6d_t actualPos = m_rtsiPtr->getActualTCPPose();
+                vector6d_t tcpSpeed = m_rtsiPtr->getActualTCPVelocity();
+                
+                using clock = std::chrono::system_clock;
+                double timestamp = std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+                
+                currentPos = RobotPosition{actualPos[0], actualPos[1], actualPos[2], 
+                                          actualPos[3], actualPos[4], actualPos[5], timestamp};
+                
+                // 检查是否在运动
+                double sqSum = 0;
+                for (auto v : tcpSpeed)
+                    sqSum += v * v;
+                bool isMoving = sqSum > 1e-4;
+                
+                // 检查位置变化是否超过阈值
+                if (!firstRun) {
+                    double dx = currentPos.x - lastPos.x;
+                    double dy = currentPos.y - lastPos.y;
+                    double dz = currentPos.z - lastPos.z;
+                    double distanceSq = dx*dx + dy*dy + dz*dz;
+                    
+                    if (distanceSq > m_positionThreshold * m_positionThreshold) {
+                        if (m_posCallbackPtr && *m_posCallbackPtr) {
+                            (*m_posCallbackPtr)(currentPos);
+                        }
+                        lastPos = currentPos;
+                    }
+                } else {
+                    firstRun = false;
+                    lastPos = currentPos;
+                }
+                
+                // 检查运动状态变化，用于清除pending命令
+                if (isMoving) {
+                    wasMoving = true;
+                    noMovementCount = 0;
+                } else if (wasMoving && !isMoving) {
+                    noMovementCount++;
+                    // 连续3次检测到没有运动，认为运动完成
+                    if (noMovementCount >= 3) {
+                        std::lock_guard<std::mutex> lock(m_motionStateMutex);
+                        m_hasPendingMoveCommand.store(false);
+                        wasMoving = false;
+                        noMovementCount = 0;
+                    }
+                }
+                
+            } catch (const std::exception& e) {
+                // RTSI异常处理，继续监控
+                ELITE_LOG_ERROR("RTSI error in position monitor: %s", e.what());
+            }
+        }
+        
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(static_cast<int>(m_callbackIntervalMs))
+        );
+    }
+}
+
+bool EliteCSRobot::WaitForMotionComplete(int timeoutMs)
+{
+    auto start = std::chrono::steady_clock::now();
+    
+    while (IsMoving()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start);
+        
+        if (elapsed.count() > timeoutMs) {
+            ELITE_LOG_ERROR("Wait for motion timeout after %d ms", timeoutMs);
+            return false;
+        }
+    }
+    
+    ELITE_LOG_INFO("Motion completed");
+    return true;
+}
+
+bool EliteCSRobot::MoveToSync(double x, double y, double z, double rx, double ry, double rz, int timeoutMs)
+{
+    if (!MoveTo(x, y, z, rx, ry, rz)) {
+        return false;
+    }
+    
+    return WaitForMotionComplete(timeoutMs);
+}
+
+bool EliteCSRobot::MoveToWithCallback(double x, double y, double z, double rx, double ry, double rz,
+                                     std::function<void(const RobotPosition&)> progressCallback, int timeoutMs)
+{
+    if (!MoveTo(x, y, z, rx, ry, rz)) {
+        return false;
+    }
+    
+    auto start = std::chrono::steady_clock::now();
+    
+    // 监控运动进度
+    while (IsMoving()) {
+        if (progressCallback) {
+            RobotPosition currentPos;
+            if (GetPosition(currentPos)) {
+                progressCallback(currentPos);
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start);
+        
+        if (elapsed.count() > timeoutMs) {
+            ELITE_LOG_ERROR("MoveToWithCallback timeout after %d ms", timeoutMs);
+            return false;
+        }
+    }
+    
+    // 最后调用一次回调，确保获取最终位置
+    if (progressCallback) {
+        RobotPosition finalPos;
+        if (GetPosition(finalPos)) {
+            progressCallback(finalPos);
+        }
+    }
+    
+    return true;
 }
