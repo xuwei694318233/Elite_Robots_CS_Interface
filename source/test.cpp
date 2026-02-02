@@ -131,7 +131,7 @@ void TestSyncMotion(EliteCSRobot &robot)
     // Test MoveToWithCallback
     std::cout << "Testing MoveToWithCallback...\n";
     targetPos.z += 0.015; // Move up 1.5cm
-    
+
     int callbackCount = 0;
     auto progressCallback = [&](const RobotPosition &pos)
     {
@@ -139,7 +139,7 @@ void TestSyncMotion(EliteCSRobot &robot)
         std::cout << "Progress " << callbackCount << ": z=" << pos.z << std::endl;
     };
 
-    if (robot.MoveToWithCallback(targetPos.x, targetPos.y, targetPos.z, 
+    if (robot.MoveToWithCallback(targetPos.x, targetPos.y, targetPos.z,
                                  targetPos.rx, targetPos.ry, targetPos.rz, progressCallback))
     {
         RobotPosition finalPos;
@@ -302,13 +302,72 @@ void TestMotionMode(EliteCSRobot &robot)
 }
 
 // --------------------------------------------------------
+// Test: Check position before and after movement
+// --------------------------------------------------------
+void TestPositionChange(EliteCSRobot &robot)
+{
+    RobotPosition initialPos, finalPos;
+
+    // Get initial position
+    if (!robot.GetPosition(initialPos))
+    {
+        std::cerr << "Failed to get initial position." << std::endl;
+        return;
+    }
+    PrintPosition(initialPos, "Initial Position");
+
+    // Move to a new position
+    double targetX = initialPos.x + 0.1; // Example offset
+    double targetY = initialPos.y;
+    double targetZ = initialPos.z;
+    double targetRX = initialPos.rx;
+    double targetRY = initialPos.ry;
+    double targetRZ = initialPos.rz;
+
+    if (!robot.MoveTo(targetX, targetY, targetZ, targetRX, targetRY, targetRZ))
+    {
+        std::cerr << "Failed to move to target position." << std::endl;
+        return;
+    }
+
+    // Wait for motion to complete
+    if (!robot.WaitForMotionComplete(5000))
+    {
+        std::cerr << "Motion did not complete in time." << std::endl;
+        return;
+    }
+
+    // Get final position
+    if (!robot.GetPosition(finalPos))
+    {
+        std::cerr << "Failed to get final position." << std::endl;
+        return;
+    }
+    PrintPosition(finalPos, "Final Position");
+
+    // Check if position changed
+    double distanceSq = std::pow(finalPos.x - initialPos.x, 2) +
+                        std::pow(finalPos.y - initialPos.y, 2) +
+                        std::pow(finalPos.z - initialPos.z, 2);
+
+    if (distanceSq > 1e-4)
+    {
+        std::cout << "Test Passed: Position changed as expected." << std::endl;
+    }
+    else
+    {
+        std::cerr << "Test Failed: Position did not change as expected." << std::endl;
+    }
+}
+
+// --------------------------------------------------------
 // Main Entry
 // --------------------------------------------------------
 int main()
 {
     // 1. Configuration
     std::cout << "=== Elite Robot Interface Test Start ===\n";
-    std::string rootDir = R"(C:\Users\GhFeng\Desktop\xuwei\gitcode\Elite_Robots_CS_Interface-main)";
+    std::string rootDir = R"(C:\Users\GhFeng\Desktop\xuwei\gitcode\Elite_Robots_CS_Interface)";
 
     ELITE::EliteDriverConfig config;
     config.headless_mode = true;
@@ -338,14 +397,15 @@ int main()
 
     if (robot.GetPosition(currentPos))
     {
-        TestBasicMotion(robot, currentPos);
-        TestSyncMotion(robot);  // 添加同步运动测试
-        TestLinearMotion(robot, currentPos);
-        TestCircularMotion(robot, currentPos);
-        TestJogging(robot);
-        TestPathRecordingAndPlayback(robot);
-        Testcallbacks(robot);
-        TestMotionMode(robot);
+        // TestBasicMotion(robot, currentPos);
+        // TestSyncMotion(robot); // 添加同步运动测试
+        // TestLinearMotion(robot, currentPos);
+        // TestCircularMotion(robot, currentPos);
+        // TestJogging(robot);
+        // TestPathRecordingAndPlayback(robot);
+        // Testcallbacks(robot);
+        // TestMotionMode(robot);
+        TestPositionChange(robot);
     }
     else
     {

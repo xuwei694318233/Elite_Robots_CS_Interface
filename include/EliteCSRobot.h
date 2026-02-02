@@ -91,12 +91,12 @@ namespace ROBOT
     public:
         bool MoveTrajectory(const std::vector<ELITE::vector6d_t> &trajectory, float pointTime, float blendRadius,
                             bool isCartesian);
-        
+
         /*--------  同步运动  --------*/
         bool WaitForMotionComplete(int timeoutMs = 10000);
         bool MoveToSync(double x, double y, double z, double rx = 0, double ry = 0, double rz = 0, int timeoutMs = 10000);
         bool MoveToWithCallback(double x, double y, double z, double rx = 0, double ry = 0, double rz = 0,
-                               std::function<void(const RobotPosition&)> progressCallback = nullptr, int timeoutMs = 10000);
+                                std::function<void(const RobotPosition &)> progressCallback = nullptr, int timeoutMs = 10000);
 
     private:
         struct Config
@@ -147,7 +147,6 @@ namespace ROBOT
         double m_callbackIntervalMs{100};  // 100ms间隔
 
         /*--------  运动状态跟踪  --------*/
-        std::atomic<bool> m_hasPendingMoveCommand{false};
         std::chrono::steady_clock::time_point m_lastMoveCommandTime;
         mutable std::mutex m_motionStateMutex;
 
